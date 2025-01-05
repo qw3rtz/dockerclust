@@ -1,0 +1,8 @@
+TODO:
+- copy dtb and dto(overlay) to tftproot dir in master-node after slave build
+- differentiation between different platforms to expand platform support --> implement logic in mk-tools
+- prepull portainer and portainer-agent to offline deploy portainer on firstboot
+- lvm and iscsi for storage sharing instead of nfs
+--> master and slave lvm prepare logic
+- stabilize docker swarm functionality after powerloss on any node
+- replace rootfs with squashfs on master
