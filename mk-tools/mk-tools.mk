@@ -52,7 +52,7 @@ EXTERNAL_PATH := $(ROOT_DIR)/project/$(TARGET_PLATFORM)
 # Overwrite Make command 
 ###############################################################################
 
-MAKE_CMD_MASTER := make \
+MAKE_CMD := make \
 	 O=$(ROOT_DIR)/output/$(TARGET_PLATFORM) \
 	 V=0 \
 	 BR2_EXTERNAL=$(EXTERNAL_PATH) \
