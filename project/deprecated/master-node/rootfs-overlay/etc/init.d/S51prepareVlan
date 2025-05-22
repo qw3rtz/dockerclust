@@ -1,0 +1,34 @@
+#!/bin/sh
+
+do_start() {
+	mkdir -p /var/resolv/
+	touch /var/resolv/resolv.conf
+        ip link add link eth0 name eth0.5 type vlan id 5
+        ip link add link eth0 name eth0.1 type vlan id 1
+        ifup eth0.5
+        ifup eth0.1
+}
+
+do_stop() {
+        ifdown eth0.5
+        ifdown eth0.1
+        ip link delete eth0.5
+        ip link delete eth0.1
+}
+
+case "$1" in
+        start)
+		do_start
+                ;;
+        stop)
+		do_stop
+                ;;
+        restart)
+		do_stop
+                sleep 1
+		do_start
+                ;;
+	*)
+                echo "Usage: $0 {start|stop|restart}"
+                exit 1
+esac

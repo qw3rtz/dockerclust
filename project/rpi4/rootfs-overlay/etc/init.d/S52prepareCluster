@@ -1,0 +1,93 @@
+#!/bin/sh
+
+do_start() {
+	# TODO: merge slave preperations and create etc files here depending if master or slave
+	# setup poe-fan
+	modprobe rpi-poe-fan
+
+	# setup cp210x (only needed as helper for zigbee2mqtt container)
+	modprobe cp210x
+	for i in $(ls /sys/bus/usb-serial/drivers/cp210x/ 2>/dev/null)
+	do
+		if [[ "$i" =~ "tty" ]] 
+		then
+			ln -s /dev/$i /dev/cp210x
+			break
+		fi
+	done
+
+	# setup link for docker-root
+        MAC=$(cat /sys/class/net/eth0/address | tr -d :)
+	ln -s /mnt/cluster-data/$MAC /var/lib/docker
+
+	# set hostname
+        echo 'dockerclust-'${MAC}'' > /etc/hostname
+	rm -rf /tftpboot/
+	mkdir -p /boot/
+	ln -s /boot/ /tftpboot
+
+	# fix expired certificate error on docker swarm after chrony sync
+	date -s "2025-01-01 00:00"
+	mkdir -p /var/resolv
+	touch /var/resolv/resolv.conf
+	/etc/init.d/S*dhcpcd restart
+	sleep 3
+
+        # prepare cluster store
+        if [ ! -b /dev/mmcblk0p2 ]
+        then
+            	sed -e 's/\s*\([\+0-9a-zA-Z]*\).*/\1/' << EOF | fdisk /dev/mmcblk0
+            	  n
+            	  p
+            	  2
+            	  
+            	  
+            	  w
+            	  q
+EOF
+            	mkfs.btrfs /dev/mmcblk0p2
+	
+  	    	# setup mounts
+	    	echo -e "UUID=$(blkid /dev/mmcblk0p2 -s UUID -o value)\t/mnt/cluster-data/\tbtrfs\tdefaults\t0\t0\n" >> /etc/fstab
+            	echo -e "UUID=$(blkid /dev/mmcblk0p1 -s UUID -o value)\t/boot/\tvfat\tdefaults\t0\t2\n" >> /etc/fstab
+            	mount -a
+            	
+            	# prepare docker swarm manager config
+            	mkdir /mnt/cluster-data/$MAC
+	    	mkdir /mnt/cluster-data/shared-volumes
+    	else
+  	    	# setup mounts
+	    	echo -e "UUID=$(blkid /dev/mmcblk0p2 -s UUID -o value)\t/mnt/cluster-data/\tbtrfs\tdefaults\t0\t0\n" >> /etc/fstab
+            	echo -e "UUID=$(blkid /dev/mmcblk0p1 -s UUID -o value)\t/boot/\tvfat\tdefaults\t0\t2\n" >> /etc/fstab
+            	mount -a
+	fi
+            
+	mkdir -p /etc/docker
+        echo '{ "data-root": "/mnt/cluster-data/'${MAC}'" }' > /etc/docker/daemon.json
+
+	# setup ip routing
+	iptables -t nat -A POSTROUTING -o eth0.1 -j MASQUERADE
+	iptables -A FORWARD -i eth0.1 -o eth0.5 -m state --state RELATED,ESTABLISHED -j ACCEPT
+	iptables -A FORWARD -i eth0.5 -o eth0.1 -j ACCEPT
+}
+
+do_stop() {
+	echo "S99prepareCluster: nothing to do - single shot script"
+}
+
+case "$1" in
+        start)
+		do_start
+                ;;
+        stop)
+		do_stop
+                ;;
+        restart)
+		do_stop
+                sleep 1
+		do_start
+                ;;
+	*)
+                echo "Usage: $0 {start|stop|restart}"
+                exit 1
+esac
