@@ -10,6 +10,7 @@ image boot.vfat {
 
 image sdcard.img {
 	hdimage {
+		disk-signature = 0x55555555
 	}
 
 	partition boot {

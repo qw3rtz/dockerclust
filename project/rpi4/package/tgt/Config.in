@@ -1,0 +1,5 @@
+config BR2_PACKAGE_TGT
+    bool "tgt userspace SCSI target"
+    default n
+    help
+      tgt is a user-space SCSI target framework. Useful for iSCSI, FCoE, etc.

@@ -1,6 +1,2 @@
 TODO:
 - differentiation between different platforms to expand platform support --> implement logic in mk-tools
-- lvm and iscsi for storage sharing instead of nfs
---> master and slave lvm prepare logic
-- stabilize docker functionality after powerloss on any node
-- replace rootfs with squashfs on master --> not working if slaves uses the same initramfs as tftp boot
