@@ -7,10 +7,12 @@ GENIMAGE_CFG="${BINARIES_DIR}/genimage.cfg"
 GENIMAGE_TMP="${BUILD_DIR}/genimage.tmp"
 FILES=()
 
+cp "${CURRENT_DIR}"/dockerclust.conf "${BINARIES_DIR}"/
+
 for i in "${BINARIES_DIR}"/*.dtb "${BINARIES_DIR}"/rpi-firmware/*; do
 	FILES+=( "${i#${BINARIES_DIR}/}" )
 done
-FILES+=( "Image" "rootfs.cpio.gz" ) #"config.txt" "cmdline.txt" )
+FILES+=( "Image" "rootfs.cpio.gz" "dockerclust.conf" ) #"config.txt" "cmdline.txt" )
 
 BOOT_FILES=$(printf '\\t\\t\\t"%s",\\n' "${FILES[@]}")
 sed "s|#BOOT_FILES#|${BOOT_FILES}|" "${CURRENT_DIR}/genimage.cfg.in" \

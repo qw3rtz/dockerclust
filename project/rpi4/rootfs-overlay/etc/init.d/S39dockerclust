@@ -1,36 +1,44 @@
 #!/bin/sh
 
+# TODO: implement error checks and make it robust if master crashes and reboots (ISCSI and NFS)
 ### setup script-environment ###
-# TODO: should dockerclust.conf be on boot-partition?
-# to manipulate env, edit $SHARE_MOUNT/dockerclust.conf and override the target env variables
-export MASTER_IFACE="eth0" # can be ignored if CLUSTER_IFACE + GATEWAY_CLUSTER is setted statically and USE_VLANS is false (for env without vlans)
-export CLUSTER_VLAN="5" 
-export GATEWAY_VLAN="1"
-export CLUSTER_IFACE="${MASTER_IFACE}.${CLUSTER_VLAN}"
-export GATEWAY_IFACE="${MASTER_IFACE}.${GATEWAY_VLAN}"
-export SLAVE_IFACE="eth0"
-export USE_VLANS="true"
-export DISK="mmcblk0"
-export BOOT_PART="1"
-export DATA_PART="2"
-export MAC_MASTER=$(cat /sys/class/net/${MASTER_IFACE}/address | tr -d :)
-export MAC_SLAVE=$(cat /sys/class/net/${SLAVE_IFACE}/address | tr -d :)
-export VG="vg_data"
-export LV_SHARE="lv_share"
-export LV_MASTER="lv_${MAC_MASTER}"
-export LV_SLAVE="lv_${MAC_SLAVE}"
-export SHARE_MOUNT="/mnt/cluster-data"
-export DOCKER_MOUNT="/mnt/docker-root"
-export ISCSI_LV_SIZE="10G"
-export GATEWAY_SUBNET="255.255.255.224"
-export GATEWAY_IPV4="10.5.5.2"
-export GATEWAY_GW="10.5.5.1"
-export NTP_SERVER="0.europe.pool.ntp.org"
-export DNS_SERVER="193.110.81.0" # dns0.eu dns-server
-export DISK_SIGNATURE=$(dd if=/dev/${DISK} bs=1 skip=440 count=4 2>/dev/null | xxd -p)
-export NODE_TYPE=$(if [[ "$DISK_SIGNATURE" == "55555555" ]]; then echo master; else echo slave; fi) # check for dockerclust disk-signature
-export DATA_PART_NAME=$(if [[ "$DISK" == nvme* || "$DISK" == mmc* ]]; then echo "${DISK}p${DATA_PART}"; else echo "${DISK}${DATA_PART}"; fi)
-export BOOT_PART_NAME=$(if [[ "$DISK" == nvme* || "$DISK" == mmc* ]]; then echo "${DISK}p${BOOT_PART}"; else echo "${DISK}${BOOT_PART}"; fi)
+# to manipulate env, edit /boot/dockerclust.conf and override the target env variables
+MASTER_IFACE="eth0" # can be ignored if CLUSTER_IFACE + GATEWAY_CLUSTER is setted statically and USE_VLANS is false (for env without vlans)
+CLUSTER_VLAN="5" 
+GATEWAY_VLAN="1"
+CLUSTER_IFACE="${MASTER_IFACE}.${CLUSTER_VLAN}"
+GATEWAY_IFACE="${MASTER_IFACE}.${GATEWAY_VLAN}"
+SLAVE_IFACE="eth0"
+USE_VLANS="true"
+DISK="mmcblk0"
+BOOT_PART="1"
+DATA_PART="2"
+MAC_MASTER=$(cat /sys/class/net/${MASTER_IFACE}/address | tr -d :)
+MAC_SLAVE=$(cat /sys/class/net/${SLAVE_IFACE}/address | tr -d :)
+VG="vg_data"
+LV_SHARE="lv_share"
+LV_MASTER="lv_${MAC_MASTER}"
+LV_SLAVE="lv_${MAC_SLAVE}"
+SHARE_MOUNT="/mnt/cluster-data"
+DOCKER_MOUNT="/mnt/docker-root"
+ISCSI_LV_SIZE="10G"
+ISCSI_TARGET="iqn.2025-06.io.dockerclust:docker-root"
+GATEWAY_SUBNET="255.255.255.224"
+GATEWAY_IPV4="10.5.5.2"
+GATEWAY_GW="10.5.5.1"
+CLUSTER_SUBNET="255.255.255.248"
+CLUSTER_IPV4="172.16.5.1"
+CLUSTER_NET="172.16.5.0/29" # !!network must match with CLUSTER_IPV4 and CLUSTER_SUBNET!!
+CLUSTER_DHCP_RANGE="172.16.5.2,172.16.5.6,24h" # !!range must match with CLUSTER_IPV4, CLUSTER_SUBNET and CLUSTER_IPV4!!
+NTP_SERVER="0.europe.pool.ntp.org"
+DNS_SERVER="193.110.81.0" # dns0.eu dns-server
+DISK_SIGNATURE=$(dd if=/dev/${DISK} bs=1 skip=440 count=4 2>/dev/null | xxd -p)
+NODE_TYPE=$(if [[ "$DISK_SIGNATURE" == "55555555" ]]; then echo master; else echo slave; fi) # check for dockerclust disk-signature
+DATA_PART_NAME=$(if [[ "$DISK" == nvme* || "$DISK" == mmc* ]]; then echo "${DISK}p${DATA_PART}"; else echo "${DISK}${DATA_PART}"; fi)
+BOOT_PART_NAME=$(if [[ "$DISK" == nvme* || "$DISK" == mmc* ]]; then echo "${DISK}p${BOOT_PART}"; else echo "${DISK}${BOOT_PART}"; fi)
+
+# dynamic global variables
+LUN_MAPPING=""
 
 
 write_master_interfaces() {
@@ -44,8 +52,8 @@ iface $MASTER_IFACE inet manual
 
 auto $CLUSTER_IFACE
 iface $CLUSTER_IFACE inet static
-        address 172.16.5.1
-        netmask 255.255.255.248
+        address $CLUSTER_IPV4
+        netmask $CLUSTER_SUBNET
 
 auto $GATEWAY_IFACE
 iface $GATEWAY_IFACE inet static
@@ -64,22 +72,21 @@ logdir /var/log/chrony
 maxupdateskew 100.0
 makestep 1 3
 local stratum 8
-allow 172.16.5.0/29
+allow $CLUSTER_NET
 EOF
 }
-
 
 write_master_create_iscsi_lv() {
 	cat <<EOF > /usr/bin/create-iscsi-lv.sh
 #!/bin/sh
 
 ACTION="\$1"
-MAC=\$(echo "\$2" | tr -d ':')
+MAC=\$(echo "\$2" | tr -d ':' | tr 'A-Z' 'a-z')
 IP="\$3"
 HOSTNAME="\$4"
 
 # Only act on new leases
-if [ "\$ACTION" = "add" ]; then
+if [ "\$ACTION" = "add" ] && [ "\$MAC" != "$MAC_MASTER" ]; then
     LV_NAME="lv_\$MAC"
 
     # Check if LV already exists
@@ -88,13 +95,17 @@ if [ "\$ACTION" = "add" ]; then
 	vgchange -ay $VG
         mkfs.btrfs /dev/${VG}/\$LV_NAME
 
-	LUNS=\$(tgtadm --lld iscsi --mode target --op show --tid 1 | grep 'LUN:' | awk '{print \$2}' | tr -d ':')
+	LUNS=\$(tgtadm --lld iscsi --mode target --op show | grep 'LUN:' | awk '{print \$2}' | tr -d ':')
 	NEXT_LUN=1
 	while echo "\$LUNS" | grep -qw "\$NEXT_LUN"
 	do
 		NEXT_LUN=\$((\$NEXT_LUN + 1))
 	done
 	tgtadm --lld iscsi --op new --mode logicalunit --tid 1 --lun \$NEXT_LUN -b /dev/${VG}/\$LV_NAME
+	mount -o remount,rw /boot
+	echo "\$LV_NAME:\$NEXT_LUN" >> /boot/lun-mapping.txt
+	sync
+	mount -o remount,ro /boot
         logger "Created LV \$LV_NAME for DHCP client \$MAC (\$IP \$HOSTNAME)"
     fi
 fi
@@ -118,7 +129,7 @@ EOF
 
 write_master_exports() {
 	cat <<EOF > /etc/exports
-$SHARE_MOUNT 172.16.5.0/29(rw,no_root_squash,no_subtree_check)
+$SHARE_MOUNT $CLUSTER_NET(rw,no_root_squash,no_subtree_check)
 EOF
 }
 
@@ -127,24 +138,17 @@ write_master_dnsmasq() {
 interface=$CLUSTER_IFACE
 no-dhcp-interface=$MASTER_IFACE
 no-dhcp-interface=$GATEWAY_IFACE
-dhcp-range=172.16.5.2,172.16.5.6,24h
+dhcp-range=$CLUSTER_DHCP_RANGE
 enable-tftp
 tftp-root=/tftpboot
 pxe-service=0,"Raspberry Pi Boot"
-dhcp-option=42,172.16.5.1 # ntp-server
-dhcp-option=3,172.16.5.1 # gateway
-dhcp-option=6,172.16.5.1 # dns-server
+dhcp-option=42,$CLUSTER_IPV4 # ntp-server
+dhcp-option=3,$CLUSTER_IPV4 # gateway
+dhcp-option=6,$CLUSTER_IPV4 # dns-server
 dhcp-script=/usr/bin/create-iscsi-lv.sh
 server=$DNS_SERVER
 EOF
 }
-
-#write_master_iscsi_slave_setup() {
-#	mkdir -p /etc/dhcpcd/dhcpcd-hooks
-#	cat <<EOF > /etc/dhcpcd/dhcpcd-hooks/99-iscsi-slave-setup
-#EOF
-#	chmod +x /etc/dhcpcd/dhcpcd-hooks/99-iscsi-slave-setup
-#}
 
 write_slave_interfaces() {
 	mkdir -p /etc/network
@@ -160,7 +164,7 @@ EOF
 
 write_slave_chrony() {
 	cat <<EOF > /etc/chrony.conf
-server 172.16.5.1 iburst prefer
+server $CLUSTER_IPV4 iburst prefer
 keyfile /var/lib/chrony/chrony.keys
 driftfile /var/lib/chrony/chrony.drift
 logdir /var/log/chrony
@@ -175,15 +179,14 @@ EOF
 	chmod +x /usr/bin/create-iscsi-lv.sh
 }
 
-# TODO: add iscsi lvm volume for docker-root
 write_slave_fstab() {
 	cat <<EOF > /etc/fstab
 tmpfs	/tmp	tmpfs	mode=1777	0	0
 tmpfs	/run	tmpfs	mode=0755,nosuid,nodev	0	0
 tmpfs	/var	tmpfs	defaults	0	0
 tmpfs	/root	tmpfs	defaults	0	0
-/dev/$VG/$LV_SLAVE	$DOCKER_MOUNT	btrfs	defaults	0	0
-172.16.5.1:$SHARE_MOUNT    $SHARE_MOUNT       nfs     rw,vers=3,hard,noatime,nolock,noacl,exec,dev,suid       0       0
+$LUN_MAPPING	$DOCKER_MOUNT	btrfs	defaults	0	0
+$CLUSTER_IPV4:$SHARE_MOUNT    $SHARE_MOUNT       nfs     rw,vers=3,hard,noatime,nolock,noacl,exec,dev,suid       0       0
 EOF
 }
 
@@ -197,35 +200,49 @@ write_slave_dnsmasq() {
 EOF
 }
 
-# TODO: fix sdx determinition for fstab and corect dns target lun id
-#write_slave_iscsi_slave_setup() {
-#	mkdir -p /etc/dhcpcd/dhcpcd-hooks
-#	cat <<EOF > /etc/dhcpcd/dhcpcd-hooks/99-iscsi-slave-setup
-##!/bin/bash
-#
-#if [ "\$reason" = "BOUND" ] || [ "\$reason" = "RENEW" ] || [ "\$reason" = "REBIND" ]; then
-#	logger "dhcpcd: \$interface received IP \$new_ip_address"
-#	iscsiadm -m discovery -t sendtargets -p 172.16.5.1
-#	iscsiadm -m node -T <need target> -p 172.16.5.1 --login
-#	<need logic for determining correct sdx laufwerk>
-#fi
-#EOF
-#	chmod +x /etc/dhcpcd/dhcpcd-hooks/99-iscsi-slave-setup
-#}
-
 do_start() {
 	### early stuff ###
+	## setup required system paths
 	echo "setup early stuff"
-	if [[ "$NODE_TYPE" == master ]]
-	then
-		mkdir -p /boot
-	fi
 	mkdir -p /var/lib/misc
+	mkdir -p /var/lib/nfs
+	mkdir -p /var/run
 	mkdir -p /root
 	mkdir -p /etc/dropbear
+	touch /etc/resolv.conf
+	mount
+
+	## setup overrides and slave network
+	if [[ "$NODE_TYPE" == master ]]
+	then
+		## setup environment
+		mkdir -p /boot
+		mount -t vfat -o ro /dev/${BOOT_PART_NAME} /boot
+		. /boot/dockerclust.conf # override variables
+	else
+		## special slave networking stuff
+		# slave needs at the very beginning network
+		echo "setup networking"
+		write_${NODE_TYPE}_interfaces
+		ifup $SLAVE_IFACE
+		sleep 2 # wait for network be really up
+		udhcpc -i $SLAVE_IFACE
+		if [ $? -ne 0 ]
+		then
+			echo "slave-error: no dhcp lease gotten - abort"
+			exit 1 # further execution makes no sense here
+		fi
+
+		## setup environment
+		cd /tmp
+		tftp -g -r dockerclust.conf $CLUSTER_IPV4
+		. /tmp/dockerclust.conf # override variables
+		cd ~
+	fi
+
+	## setup further paths
 	mkdir -p ${DOCKER_MOUNT} 
 	mkdir -p ${SHARE_MOUNT}
-	touch /etc/resolv.conf
 	
 
 	### kernel stuff ###
@@ -268,31 +285,14 @@ do_start() {
 		fi
 	fi
 
-	## setup fstab
-	write_${NODE_TYPE}_fstab
-	# mount -a will not work here on slave site - udhcpcd will be triggered later
-	
-	## setup paths 
-	# TODO: move dockerclust.conf to boot part?
-	#if [[ "$NODE_TYPE" == master ]]
-	#then
-	#	mount -a
-	#	mkdir -p ${SHARE_MOUNT}/shared-volumes
-	#	mkdir -p ${SHARE_MOUNT}/docker-stacks
-	#	if [ -f ${SHARE_MOUNT}/dockerclust.conf ]
-	#	then
-	#		touch ${SHARE_MOUNT}/dockerclust.conf
-	#	else
-	#		# read dockerclust.conf
-	#		source ${SHARE_MOUNT}/dockerclust.conf
-	#	fi
-	#fi
-	
 
 	### networking stuff ###
 	echo "setup networking"
 	## setup iface config
-	write_${NODE_TYPE}_interfaces
+	if [[ "$NODE_TYPE" == master ]]
+	then
+		write_${NODE_TYPE}_interfaces
+	fi
 	
 	## setup vlans
 	if [[ "$NODE_TYPE" == master ]]
@@ -305,14 +305,6 @@ do_start() {
 		ifup $MASTER_IFACE
         	ifup $CLUSTER_IFACE
         	ifup $GATEWAY_IFACE
-	else
-		ifup $SLAVE_IFACE
-		udhcpc -i $SLAVE_IFACE
-		if [ $? -ne 0 ]
-		then
-			echo "slave-error: no dhcp lease gotten - abort"
-			exit 1 # further execution makes no sense here
-		fi
 	fi
 	
 	## setup ip routing
@@ -324,34 +316,60 @@ do_start() {
 	fi
 
 	## setup nfs
+	sleep 2 # wait for network be really up
 	write_${NODE_TYPE}_exports
+	rpcbind
 
 	## setup iscsi
 	if [[ "$NODE_TYPE" == master ]]
 	then
 		tgtd
-		tgtadm --lld iscsi --op new --mode target --tid 1 -T iqn.2025-06.io.dockerclust:docker-root
+		sleep 2 # wait for tgtd be really running
+		tgtadm --lld iscsi --op new --mode target --tid 1 -T $ISCSI_TARGET
 		LV_LIST=$(lvs --noheadings -o lv_path | awk '{print $1}')
 		LUN=1
+		mount -o remount,rw /boot
+		rm /boot/lun-mapping.txt
 		for i in $LV_LIST 
 		do
 			tgtadm --lld iscsi --mode logicalunit --op new --tid 1 --lun $LUN -b $i
-			echo "Added $i as LUN $NEXT_LUN to target $TID"
+			echo "Added $i as LUN $LUN to target $TID"
+			echo "$(echo $i | cut -d'/' -f4):$LUN" >> /boot/lun-mapping.txt
 			LUN=$(($LUN + 1))
 		done
-		tgtadm --lld iscsi --op bind --mode target --tid 1 -I 172.16.5.1
+		sync
+		mount -o remount,ro /boot
+		tgtadm --lld iscsi --op bind --mode target --tid 1 -I $CLUSTER_IPV4
 	else
 		mkdir -p /etc/iscsi
 		echo "InitiatorName=$(iscsi-iname)" > /etc/iscsi/initiatorname.iscsi
 		iscsid
-		iscsiadm -m discovery -t sendtargets -p 172.16.5.1
-		iscsiadm -m node -T iqn.2025-06.io.dockerclust:docker-root -p 172.16.5.1 --login
-		# TODO: testing
-		pvscan 
-		vgscan
-		lvscan
+		sleep 2 # wait for iscsiadm be really running
+		TARGET=$(iscsiadm -m discovery -t sendtargets -p $CLUSTER_IPV4)
+		iscsiadm -m node -T $TARGET -p $CLUSTER_IPV4 --login
+		sleep 1 # wait for login
+
+		cd /tmp
+		tftp -g -r lun-mapping.txt $CLUSTER_IPV4
+		LUN=$(cat lun-mapping.txt | grep $MAC_SLAVE | cut -d':' -f2)
+		cd ~
+
+		LUN_MAPPING=$(
+		iscsiadm -m session -P 3 | \
+		awk -v lun="$LUN" '
+		  $0 ~ "Lun: " lun"$" {
+		    getline
+		    if ($0 ~ /Attached scsi disk/) {
+		      for (i=1; i<=NF; i++) {
+		        if ($i == "disk") {
+		          print "/dev/" $(i+1)
+		          exit
+		        }
+		      }
+		    }
+		  }
+		')       
 	fi
-	#write_${NODE_TYPE}_iscsi_slave_setup
 
 	## setup dnsmasq
 	write_${NODE_TYPE}_dnsmasq
@@ -367,7 +385,7 @@ do_start() {
 	echo "setup misc"
 	## setup docker
 	mkdir -p /etc/docker
-        echo '{ "data-root": "/mnt/'${DOCKER_MOUNT}'" }' > /etc/docker/daemon.json
+        echo '{ "data-root": "'${DOCKER_MOUNT}'" }' > /etc/docker/daemon.json
 	
 	## setup tftpboot
 	if [[ "$NODE_TYPE" == master ]]
@@ -384,7 +402,9 @@ do_start() {
 	else
         	echo 'dockerclust-'${MAC_SLAVE}'' > /etc/hostname
 	fi
-
+	
+	## setup fstab
+	write_${NODE_TYPE}_fstab
 	mount -a
 }
 
