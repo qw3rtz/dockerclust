@@ -91,9 +91,9 @@ if [ "\$ACTION" = "add" ] && [ "\$MAC" != "$MAC_MASTER" ]; then
 
     # Check if LV already exists
     if ! lvdisplay "/dev/${VG}/\$LV_NAME" > /dev/null 2>&1; then
-	lvcreate -n \$LV_NAME -l10%VG $VG
+	lvcreate --yes -n \$LV_NAME -l10%VG $VG
 	vgchange -ay $VG
-        mkfs.btrfs /dev/${VG}/\$LV_NAME
+        mkfs.btrfs -f /dev/${VG}/\$LV_NAME
 
 	LUNS=\$(tgtadm --lld iscsi --mode target --op show | grep 'LUN:' | awk '{print \$2}' | tr -d ':')
 	NEXT_LUN=1
@@ -273,13 +273,13 @@ do_start() {
 			
 			# setup lvm			
 			partprobe /dev/${DISK}
-			pvcreate /dev/${DATA_PART_NAME}
-			vgcreate $VG /dev/${DATA_PART_NAME}
-			lvcreate -n $LV_SHARE -l20%VG $VG
-			lvcreate -n $LV_MASTER -l10%VG $VG
+			pvcreate -f /dev/${DATA_PART_NAME}
+			vgcreate -f $VG /dev/${DATA_PART_NAME}
+			lvcreate --yes -n $LV_SHARE -l20%VG $VG
+			lvcreate --yes -n $LV_MASTER -l10%VG $VG
 			vgchange -ay $VG
-            		mkfs.btrfs /dev/${VG}/${LV_SHARE}
-            		mkfs.btrfs /dev/${VG}/${LV_MASTER}
+            		mkfs.btrfs -f /dev/${VG}/${LV_SHARE}
+            		mkfs.btrfs -f /dev/${VG}/${LV_MASTER}
 		else
 			vgchange -ay $VG
 		fi
@@ -339,13 +339,13 @@ do_start() {
 		done
 		sync
 		mount -o remount,ro /boot
-		tgtadm --lld iscsi --op bind --mode target --tid 1 -I $CLUSTER_IPV4
+		tgtadm --lld iscsi --op bind --mode target --tid 1 -I $CLUSTER_NET
 	else
 		mkdir -p /etc/iscsi
 		echo "InitiatorName=$(iscsi-iname)" > /etc/iscsi/initiatorname.iscsi
 		iscsid
 		sleep 2 # wait for iscsiadm be really running
-		TARGET=$(iscsiadm -m discovery -t sendtargets -p $CLUSTER_IPV4)
+		TARGET=$(iscsiadm -m discovery -t sendtargets -p $CLUSTER_IPV4 | cut -d' ' -f2)
 		iscsiadm -m node -T $TARGET -p $CLUSTER_IPV4 --login
 		sleep 1 # wait for login
 

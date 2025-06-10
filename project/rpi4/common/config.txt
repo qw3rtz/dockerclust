@@ -9,7 +9,7 @@ fixup_file=fixup4.dat
 
 enable_uart=1
 kernel=Image
-initramfs rootfs.cpio.gz
+initramfs rootfs.cpio.xz
 
 # Disable overscan assuming the display supports displaying the full resolution
 # If the text shown on the screen disappears off the edge, comment this out

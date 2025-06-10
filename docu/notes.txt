@@ -1,2 +1,5 @@
 TODO:
 - differentiation between different platforms to expand platform support --> implement logic in mk-tools
+- what happens if master restarts while slaves still running with iscsi? --> remount logic needed?
+- rpi-poe-fan kernel module not working yet. it is somehow missing
+- pipe known-hosts to /dev/null to avoid prompt
